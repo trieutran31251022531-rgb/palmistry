@@ -1,0 +1,149 @@
+import os
+from PIL import Image
+import tensorflow as tf
+from tensorflow.keras.applications import MobileNetV2
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.optimizers import Adam
+
+def resize_all_images(dataset_dir, target_size=(224, 224)):
+    print(f"🔄 Đang kiểm tra và đưa toàn bộ ảnh về kích thước {target_size}...")
+    count = 0
+    for root, dirs, files in os.walk(dataset_dir):
+        for file in files:
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
+                file_path = os.path.join(root, file)
+                try:
+                    with Image.open(file_path) as img:
+                  
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                       
+                        if img.size != target_size:
+                            img_resized = img.resize(target_size, Image.Resampling.LANCZOS)
+                            img_resized.save(file_path)
+                            count += 1
+                except Exception as e:
+                    print(f"⚠️ Lỗi xử lý ảnh {file_path}: {e}")
+    
+    if count > 0:
+        print(f"✅ Đã resize thành công {count} ảnh.\n")
+    else:
+        print("✅ Tất cả ảnh đã đúng kích thước, không cần resize thêm.\n")
+
+def create_model(num_classes):
+   
+    base_model = MobileNetV2(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(224, 224, 3)
+    )
+
+    base_model.trainable = False
+
+    model = Sequential([
+        base_model,
+        GlobalAveragePooling2D(),
+        Dense(128, activation="relu"),
+        Dropout(0.3),
+        Dense(num_classes, activation="softmax")
+    ])
+
+    return model, base_model
+
+def train_model(dataset_path, save_name):
+  
+    resize_all_images(dataset_path, target_size=(224, 224))
+
+    datagen = ImageDataGenerator(
+        rescale=1./255,
+        rotation_range=20,
+        zoom_range=0.2,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        validation_split=0.2
+    )
+
+    train_gen = datagen.flow_from_directory(
+        dataset_path,
+        target_size=(224, 224), 
+        batch_size=16,
+        class_mode="categorical",
+        subset="training"
+    )
+
+    val_gen = datagen.flow_from_directory(
+        dataset_path,
+        target_size=(224, 224),
+        batch_size=16,
+        class_mode="categorical",
+        subset="validation"
+    )
+
+    num_classes = len(train_gen.class_indices)
+    print(f"\n===== CHUẨN BỊ HUẤN LUYỆN VỚI {num_classes} CLASSES =====")
+    print(f"Danh sách lớp: {train_gen.class_indices}\n")
+
+    model, base_model = create_model(num_classes)
+
+    early_stop = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True, verbose=1)
+    checkpoint = ModelCheckpoint(save_name, monitor='val_accuracy', save_best_only=True, verbose=1)
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss', 
+        factor=0.3,   
+        patience=3,    
+        min_lr=1e-6,
+        verbose=1
+    )
+
+    print("\n▶ BẮT ĐẦU PHASE 1: Warm-up (Khởi động lớp phân loại)...")
+    model.compile(
+        optimizer=Adam(learning_rate=0.001),
+        loss="categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+
+    model.fit(
+        train_gen,
+        validation_data=val_gen,
+        epochs=30, 
+        callbacks=[early_stop, checkpoint, reduce_lr]
+    )
+
+    print("\n▶ BẮT ĐẦU PHASE 2: Fine-Tuning (Mở khóa não AI)...")
+    
+  
+    base_model.trainable = True
+
+   
+    fine_tune_at = 100
+    for layer in base_model.layers[:fine_tune_at]:
+        layer.trainable = False
+
+    model.compile(
+        optimizer=Adam(learning_rate=1e-5), 
+        loss="categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+
+ 
+    early_stop_phase2 = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True, verbose=1)
+
+    model.fit(
+        train_gen,
+        validation_data=val_gen,
+        epochs=20,
+        callbacks=[early_stop_phase2, checkpoint, reduce_lr]
+    )
+
+    print(f"\n🎉 HOÀN TẤT! Mô hình chính xác nhất đã được lưu tại: {save_name}\n")
+
+if __name__ == "__main__":
+ 
+    dataset_directory = r"C:\trung\palmistry" 
+    model_save_path = "model_chitay_8_classes.h5"
+
+    train_model(dataset_directory, model_save_path)
